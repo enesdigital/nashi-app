@@ -87,4 +87,29 @@ final class WebDownloadTests:XCTestCase {
         }
         XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath:folder.path),[])
     }
+    func testFailedPlaylistVideoLeavesNoPartialFilesBesideFinishedOnes() async throws {
+        let root=FileManager.default.temporaryDirectory.appendingPathComponent("Nashi-Playlist-\(UUID().uuidString)")
+        let tools=root.appendingPathComponent("tools"),destination=root.appendingPathComponent("out")
+        try FileManager.default.createDirectory(at:tools,withIntermediateDirectories:true)
+        defer { try? FileManager.default.removeItem(at:root) }
+        // The first video writes a partial download and unmerged streams, then fails like a dropped connection.
+        let script=tools.appendingPathComponent("yt-dlp")
+        try """
+        #!/bin/sh
+        for a; do last=$a; done
+        while [ $# -gt 0 ]; do [ "$1" = --output ] && out=$2; shift; done
+        dir=$(dirname "$out")
+        case "$last" in *aaaaaaaaaaa) echo x > "$dir/First.mp4.part"; echo x > "$dir/First.f137.mp4"; echo x > "$dir/First.f140.m4a"; exit 1;; esac
+        echo x > "$dir/Second.mp3"; printf 'NASHI_FILE:"%s"\\n' "$dir/Second.mp3"
+        """.write(to:script,atomically:true,encoding:.utf8)
+        try FileManager.default.setAttributes([.posixPermissions:0o755],ofItemAtPath:script.path)
+        let overrides=["NASHI_YT-DLP":script.path,"NASHI_DENO":"/bin/echo","NASHI_FFMPEG":"/bin/echo"]
+        for (key,value) in overrides { setenv(key,value,1) }
+        defer { for key in overrides.keys { unsetenv(key) } }
+        let info=try WebDownloadEngine.parsePlaylist(Data(#"{"_type":"playlist","title":"Road trip","entries":[{"id":"aaaaaaaaaaa"},{"id":"bbbbbbbbbbb"}]}"#.utf8),url:URL(string:"https://www.youtube.com/playlist?list=PLabc")!)
+        let files=try await WebDownloadEngine.download(info,mode:.audioMP3,maximumHeight:nil,destination:destination) { _,_ in }
+        XCTAssertEqual(files.map(\.lastPathComponent),["002 - Second.mp3"])
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath:destination.path),["Road trip"])
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath:destination.appendingPathComponent("Road trip").path),["002 - Second.mp3"])
+    }
 }

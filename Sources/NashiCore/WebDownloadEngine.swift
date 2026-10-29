@@ -190,9 +190,14 @@ public enum WebDownloadEngine {
         var outputs:[URL]=[]
         for (index,entry) in entries.enumerated() {
             try token.check();try Task.checkCancellation()
-            let item=WebMediaInfo(url:entry.url,title:entry.title,kind:.video,site:info.site,duration:entry.duration,heights:[],direct:false,filename:nil,byteCount:nil)
-            let arguments=try downloadArguments(item,mode:mode,maximumHeight:maximumHeight,directory:folder)
             let count=entries.count
+            // Each video of a multi-video download stages in its own folder, so a run that fails
+            // midway takes its .part files and unmerged streams with it instead of publishing them.
+            let staging=count==1 ? folder:directory.appendingPathComponent(".video-\(entry.id)",isDirectory:true)
+            if count>1 { try FileManager.default.createDirectory(at:staging,withIntermediateDirectories:false) }
+            defer { if count>1 { try? FileManager.default.removeItem(at:staging) } }
+            let item=WebMediaInfo(url:entry.url,title:entry.title,kind:.video,site:info.site,duration:entry.duration,heights:[],direct:false,filename:nil,byteCount:nil)
+            let arguments=try downloadArguments(item,mode:mode,maximumHeight:maximumHeight,directory:staging)
             let data:Data
             do {
                 data=try await Task.detached {
