@@ -115,10 +115,11 @@ public enum WebDownloadEngine {
 
     public static func parsePlaylist(_ data:Data,url:URL) throws -> WebMediaInfo {
         guard let root=try JSONSerialization.jsonObject(with:data) as? [String:Any],root["_type"] as? String=="playlist",
-              let raw=root["entries"] as? [[String:Any]] else { throw NashiError.failed("The site did not return a readable playlist.") }
+              let raw=root["entries"] as? [Any] else { throw NashiError.failed("The site did not return a readable playlist.") }
         var entries:[WebPlaylistEntry]=[],start:Int?
         let current=URLComponents(url:url,resolvingAgainstBaseURL:false)?.queryItems?.first(where:{$0.name=="v"})?.value
-        for item in raw.prefix(playlistLimit) {
+        // Unavailable items can arrive as null; skip them rather than rejecting the whole list.
+        for item in raw.prefix(playlistLimit).compactMap({$0 as? [String:Any]}) {
             guard let id=item["id"] as? String,let link=URL(string:item["url"] as? String ?? "https://www.youtube.com/watch?v=\(id)"),
                   let video=try? WebDownloadEngine.link(link.absoluteString) else { continue }
             let position=entries.count+1
@@ -127,6 +128,9 @@ public enum WebDownloadEngine {
             entries.append(WebPlaylistEntry(id:position,url:video,title:String((item["title"] as? String ?? "Video \(position)").prefix(300)),duration:duration))
         }
         guard !entries.isEmpty else { throw NashiError.unsupported("This playlist has no public videos.") }
+        // A watch link whose video is not in the readable list falls back to that single video
+        // instead of offering a playlist that would preselect everything else.
+        if current != nil,start == nil { throw NashiError.unsupported("The linked video is not in the readable part of this playlist.") }
         var info=WebMediaInfo(url:url,title:String((root["title"] as? String ?? "YouTube playlist").prefix(300)),kind:.video,site:"YouTube",
                               duration:nil,heights:[],direct:false,filename:nil,byteCount:nil)
         info.playlist=entries;info.playlistStart=start
@@ -189,20 +193,23 @@ public enum WebDownloadEngine {
             let item=WebMediaInfo(url:entry.url,title:entry.title,kind:.video,site:info.site,duration:entry.duration,heights:[],direct:false,filename:nil,byteCount:nil)
             let arguments=try downloadArguments(item,mode:mode,maximumHeight:maximumHeight,directory:folder)
             let count=entries.count
+            let data:Data
             do {
-                let data=try await Task.detached {
+                data=try await Task.detached {
                     try WebDownloadProcess.run(Dependencies.executable("yt-dlp"),arguments,token:token,timeout:21_600) { fraction,label in
                         guard count>1 else { progress(fraction,label);return }
                         progress(fraction.isFinite && fraction>=0 ? (Double(index)+min(1,fraction))/Double(count):OperationProgress.indeterminate,"Video \(index+1) of \(count)…")
                     }
                 }.value
-                for file in downloadedFiles(data) {
-                    guard count>1 else { outputs.append(file);continue }
-                    let numbered=folder.appendingPathComponent(String(format:"%03d - ",entry.id)+file.lastPathComponent)
-                    try FileManager.default.moveItem(at:file,to:numbered);outputs.append(numbered)
-                }
             } catch {
+                // Only a video the site refuses is skipped; local failures below still abort the export.
                 if token.isCancelled || count==1 { throw error }
+                continue
+            }
+            for file in downloadedFiles(data) {
+                guard count>1 else { outputs.append(file);continue }
+                let numbered=folder.appendingPathComponent(String(format:"%03d - ",entry.id)+file.lastPathComponent)
+                try FileManager.default.moveItem(at:file,to:numbered);outputs.append(numbered)
             }
         }
         guard !outputs.isEmpty else { throw NashiError.failed("None of the selected playlist videos could be downloaded. They may be private or unavailable.") }

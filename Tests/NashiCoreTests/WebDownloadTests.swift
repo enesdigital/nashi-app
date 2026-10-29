@@ -71,6 +71,12 @@ final class WebDownloadTests:XCTestCase {
         XCTAssertThrowsError(try WebDownloadEngine.parsePlaylist(Data(#"{"_type":"playlist","entries":[]}"#.utf8),url:info.url))
         XCTAssertThrowsError(try WebDownloadEngine.parsePlaylist(Data(#"{"title":"A video","formats":[]}"#.utf8),url:info.url))
     }
+    func testNullPlaylistEntriesAreSkippedAndAnUnlistedWatchVideoFallsBackToSingleVideo() throws {
+        let json=Data(#"{"_type":"playlist","entries":[null,{"id":"aaaaaaaaaaa","title":"First"},"junk",{"id":"bbbbbbbbbbb","title":"Second"}]}"#.utf8)
+        let info=try WebDownloadEngine.parsePlaylist(json,url:URL(string:"https://www.youtube.com/playlist?list=PLabc")!)
+        XCTAssertEqual(info.playlist.map(\.title),["First","Second"]);XCTAssertEqual(info.playlist.map(\.id),[1,2])
+        XCTAssertThrowsError(try WebDownloadEngine.parsePlaylist(json,url:URL(string:"https://www.youtube.com/watch?v=ccccccccccc&list=PLabc")!))
+    }
     func testPlaylistDownloadRejectsSelectionsOutsideThePlaylist() async throws {
         let info=try WebDownloadEngine.parsePlaylist(Data(#"{"_type":"playlist","entries":[{"id":"aaaaaaaaaaa"}]}"#.utf8),url:URL(string:"https://www.youtube.com/playlist?list=PLabc")!)
         let folder=FileManager.default.temporaryDirectory.appendingPathComponent("Nashi-Playlist-\(UUID().uuidString)")
