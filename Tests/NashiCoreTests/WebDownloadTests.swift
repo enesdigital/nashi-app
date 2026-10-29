@@ -51,4 +51,34 @@ final class WebDownloadTests:XCTestCase {
         let message=WebDownloadEngine.friendlyError("ERROR 403: https://example.org/private?token=secret")
         XCTAssertFalse(message.contains("secret"));XCTAssertFalse(message.contains("https://"))
     }
+    func testYouTubePlaylistLinksAreRecognizedButMixesAndOtherSitesAreNot() {
+        XCTAssertEqual(WebDownloadEngine.youTubePlaylistID(URL(string:"https://www.youtube.com/playlist?list=PLabc_-123")!),"PLabc_-123")
+        XCTAssertEqual(WebDownloadEngine.youTubePlaylistID(URL(string:"https://youtu.be/dQw4w9WgXcQ?list=PLabc")!),"PLabc")
+        XCTAssertEqual(WebDownloadEngine.youTubePlaylistID(URL(string:"https://music.youtube.com/watch?v=dQw4w9WgXcQ&list=OLAK5uy")!),"OLAK5uy")
+        for value in ["https://www.youtube.com/watch?v=dQw4w9WgXcQ","https://www.youtube.com/watch?v=dQw4w9WgXcQ&list=RDdQw4w9WgXcQ",
+                      "https://example.org/playlist?list=PLabc","https://www.youtube.com/playlist?list=PL%3Bx","https://www.youtube.com/playlist?list="] {
+            XCTAssertNil(WebDownloadEngine.youTubePlaylistID(URL(string:value)!),value)
+        }
+    }
+    func testFlatPlaylistKeepsOrderMarksTheLinkedVideoAndDropsUnsafeEntries() throws {
+        let json=Data(#"{"_type":"playlist","title":"Road trip","entries":[{"id":"aaaaaaaaaaa","title":"First","duration":61.0},{"id":"bad","url":"file:///etc/passwd","title":"Unsafe"},{"id":"bbbbbbbbbbb","url":"https://www.youtube.com/watch?v=bbbbbbbbbbb","title":"Second"}]}"#.utf8)
+        let info=try WebDownloadEngine.parsePlaylist(json,url:URL(string:"https://www.youtube.com/watch?v=bbbbbbbbbbb&list=PLabc")!)
+        XCTAssertEqual(info.title,"Road trip");XCTAssertEqual(info.kind,.video);XCTAssertEqual(info.modes,[.video,.audioMP3])
+        XCTAssertEqual(info.playlist.map(\.id),[1,2]);XCTAssertEqual(info.playlist.map(\.title),["First","Second"])
+        XCTAssertEqual(info.playlist[0].url.absoluteString,"https://www.youtube.com/watch?v=aaaaaaaaaaa");XCTAssertEqual(info.playlist[0].duration,61)
+        XCTAssertEqual(info.playlistStart,2)
+        XCTAssertNil(try WebDownloadEngine.parsePlaylist(json,url:URL(string:"https://www.youtube.com/playlist?list=PLabc")!).playlistStart)
+        XCTAssertThrowsError(try WebDownloadEngine.parsePlaylist(Data(#"{"_type":"playlist","entries":[]}"#.utf8),url:info.url))
+        XCTAssertThrowsError(try WebDownloadEngine.parsePlaylist(Data(#"{"title":"A video","formats":[]}"#.utf8),url:info.url))
+    }
+    func testPlaylistDownloadRejectsSelectionsOutsideThePlaylist() async throws {
+        let info=try WebDownloadEngine.parsePlaylist(Data(#"{"_type":"playlist","entries":[{"id":"aaaaaaaaaaa"}]}"#.utf8),url:URL(string:"https://www.youtube.com/playlist?list=PLabc")!)
+        let folder=FileManager.default.temporaryDirectory.appendingPathComponent("Nashi-Playlist-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at:folder) }
+        for items:Set<Int> in [[],[2]] {
+            do { _=try await WebDownloadEngine.download(info,mode:.video,maximumHeight:nil,destination:folder,playlistItems:items) { _,_ in };XCTFail("\(items)") }
+            catch NashiError.invalidInput {}
+        }
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath:folder.path),[])
+    }
 }
